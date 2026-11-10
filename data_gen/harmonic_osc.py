@@ -1,6 +1,5 @@
 import jax
 jax.config.update("jax_enable_x64", True)
-
 import jax.numpy as jnp
 
 import numpy as np
@@ -16,12 +15,15 @@ def create_expm_stepper(masses, K, dt):
         [-(1/masses)[:, None] * K, jnp.zeros((num_nodes, num_nodes))]
         ])
 
-    time_step_mat = jax.scipy.linalg.expm(A * dt)
+    # time_step_mat = jax.scipy.linalg.expm(A * dt)
+    eigvals, V = jnp.linalg.eig(A)
+    V_inv = jnp.linalg.inv(V)
+    time_step_mat = V @ (jnp.exp(eigvals*dt)[:,None] * V_inv)
 
     def expm_step(carry, _):
         q, v = carry
         qv = jnp.concatenate([q, v], axis=-1)
-        qv_next = time_step_mat @ qv
+        qv_next = jnp.real(time_step_mat @ qv)
 
         q_next = qv_next[:num_nodes]
         v_next = qv_next[num_nodes:]
