@@ -1,10 +1,34 @@
 import jax
+jax.config.update("jax_enable_x64", True)
+
 import jax.numpy as jnp
 
 import numpy as np
 import matplotlib.pyplot as plt
 
 from pathlib import Path
+
+def create_expm_stepper(masses, K, dt):
+    num_nodes = masses.shape[0]
+
+    A = jnp.block([
+        [jnp.zeros((num_nodes, num_nodes)), jnp.eye(num_nodes)],
+        [-(1/masses)[:, None] * K, jnp.zeros((num_nodes, num_nodes))]
+        ])
+
+    time_step_mat = jax.scipy.linalg.expm(A * dt)
+
+    def expm_step(carry, _):
+        q, v = carry
+        qv = jnp.concatenate([q, v], axis=-1)
+        qv_next = time_step_mat @ qv
+
+        q_next = qv_next[:num_nodes]
+        v_next = qv_next[num_nodes:]
+
+        return (q_next, v_next), (q_next, v_next)
+
+    return expm_step
 
 def rk4_step(carry, _):
     q, v, mass, K, dt = carry
@@ -80,6 +104,7 @@ def main():
     init_carry = (q0, v0, masses, K, dt)
     _, (q_symp, v_symp) = jax.lax.scan(symplectic_step, init_carry, length=num_steps)
     _, (q_rk4, v_rk4) = jax.lax.scan(rk4_step, init_carry, length=num_steps)
+    _, (q_expm, v_expm) = jax.lax.scan(create_expm_stepper(masses, K, dt), (q0, v0), length=num_steps)
 
     def total_energy(q, v):
         kinetic = 0.5 * jnp.sum(masses * (v**2), axis=-1)
@@ -88,24 +113,33 @@ def main():
 
     tot_energy_symp = total_energy(q_symp, v_symp)
     tot_energy_rk4 = total_energy(q_rk4, v_rk4)
+    tot_energy_expm = total_energy(q_expm, v_expm)
 
     plt.plot(t, tot_energy_symp, label="symplectic step")
     plt.plot(t, tot_energy_rk4, label="rk4 step")
+    plt.plot(t, tot_energy_expm, label="expm step")
+
+    plt.xlabel("Time")
+    plt.ylabel("Total Energy")
+
     plt.legend()
     plt.grid()
     plt.savefig("harmonic_osc.png")
     plt.close()
 
-    return t, q_symp, q_rk4, masses, K
+    return t, q_symp, q_rk4, q_expm, masses, K
 
 if __name__ == "__main__":
     data_dir = Path("data")
     data_dir.mkdir(parents=True, exist_ok=True)
-    t, q_symp, q_rk4, M, K = main()
+    t, q_symp, q_rk4, q_expm, M, K = main()
 
-    for label, data in zip(["symp", "rk4"], [q_symp, q_rk4]):
-        fname = data_dir / f"harmonic_osc_{label}.npz"
-        np.savez(fname, t=t, q=data[:,1:])
-        print("Saved incomplete simulation data @", fname)
+    data_fname = data_dir / f"harmonic_osc_coupled.npz"
+    np.savez(data_fname, t=t, q=q_expm[:,1:])
+    print("Saved incomplete simulation data @", data_fname)
 
-    np.savez(data_dir / "harmonic_osc_sys_params.npz", M=M, K=K)
+    sys_params_fname = data_dir / f"harmonic_osc_coupled_sys_params.npz"
+    np.savez(sys_params_fname, M=M, K=K)
+    print("Saved sys params @", data_fname)
+
+    print(q_expm[-1] - q_symp[-1], q_expm[-1] - q_rk4[-1])
