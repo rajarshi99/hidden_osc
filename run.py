@@ -93,42 +93,88 @@ def main():
         edges.append([i, num_dims])
     edges = jnp.array(edges)
 
+    key = jax.random.PRNGKey(69)
+    amp_key, phase_key, omega_key = jax.random.split(key,3)
+    num_modes = 10
     model = HiddenHarmonicOsc(
-            x=jnp.zeros((num_tsteps,1)),       # Only one hidden osc
-            diag_params=jnp.zeros(num_dims+1), # Only one hidden osc
-            # diag_params=jnp.array([0.1, 0.2, 0.9]),
-            edge_params=jnp.zeros(len(edges)),
+            amp=jax.random.normal(amp_key, (1,num_modes)),         # Only one hidden osc
+            phase=jax.random.normal(phase_key, (1,num_modes)),         # Only one hidden osc
+            omega=jax.random.normal(omega_key, num_modes),         # Only one hidden osc
+
+            diag_params=jnp.ones(num_dims+1), # Only one hidden osc
+            edge_params=jnp.ones(len(edges)),
             edges=edges
             )
 
     def loss_fn(model):
         return model.loss(train_data["t"], train_data["q"])
 
-    optimizer = optax.adam(1e-2)
+    schedule = optax.exponential_decay(
+                init_value=1e-2,
+                transition_steps=10000,
+                decay_rate=0.9
+                )
+    optimizer = optax.adam(schedule)
     opt_state = optimizer.init(
             eqx.filter(model, eqx.is_array)
             )
 
+    iters_per_log = 1000
+    num_iters = 500*iters_per_log
     x_norm_list = []
     loss_list = []
-    for step in range(10000):
+    val_list = []
+    for step in range(num_iters):
         model, opt_state, loss = make_step(model, opt_state, optimizer, loss_fn)
-        print(f"step={step} | loss={loss:.6e}")
-        loss_list.append(loss)
-        x_norm_list.append(jnp.linalg.norm(model.x))
+        if step % iters_per_log == 0:
+            x_norm_list.append(jnp.linalg.norm(model.amp))
+
+            loss_list.append(loss)
+
+            num_test_steps = min(test_data["q"].shape[0], 100)
+            q_pred = model.forward(train_data["t"][-2:], train_data["q"][-2:], num_test_steps)
+            rmse = jnp.sqrt(jnp.mean(
+                (q_pred[:,:-1] - test_data["q"][:num_test_steps,:])**2
+                ))
+            val_list.append(rmse)
+
+            lr = schedule(step)
+            print(f"step={step} | loss={loss:.6e} | val={rmse:.6e} | lr={float(lr):.3e}")
 
     print(model.get_osc_params())
 
+    plt.plot(x_norm_list)
+    plt.ylabel("Hidden Coord Norm")
+    plt.yscale("log")
+    plt.xlabel("Train Step")
+    plt.savefig("hidden.png")
+    plt.close()
+
     plt.plot(loss_list)
     plt.ylabel("Loss")
+    plt.yscale("log")
     plt.xlabel("Train Step")
     plt.savefig("loss.png")
     plt.close()
 
-    plt.plot(x_norm_list)
-    plt.ylabel("Hidden Osc Norm")
+    plt.plot(val_list)
+    plt.ylabel("RMSE on Prediction")
+    plt.yscale("log")
     plt.xlabel("Train Step")
-    plt.savefig("hidden.png")
+    plt.savefig("val.png")
+    plt.close()
+
+    q_pred = model.forward(train_data["t"][-2:], train_data["q"][-2:], num_test_steps)
+    print("q_pred shape", q_pred.shape)
+    print("omega shape", model.omega)
+
+    err_wrt_time = jnp.linalg.norm(q_pred[:50,:-1] - test_data["q"][:50], axis=1)
+    plt.plot(test_data["t"][:50], err_wrt_time)
+    plt.ylabel("Error Norm")
+    plt.yscale("log")
+    plt.xlabel("Test Time")
+    plt.grid()
+    plt.savefig("test.png")
     plt.close()
 
 if __name__ == "__main__":
