@@ -94,12 +94,8 @@ def main():
     edges = jnp.array(edges)
 
     key = jax.random.PRNGKey(69)
-    amp_key, phase_key, omega_key = jax.random.split(key,3)
-    num_modes = 10
     model = HiddenHarmonicOsc(
-            amp=jax.random.normal(amp_key, (1,num_modes)),         # Only one hidden osc
-            phase=jax.random.normal(phase_key, (1,num_modes)),         # Only one hidden osc
-            omega=jax.random.normal(omega_key, num_modes),         # Only one hidden osc
+            x=jax.random.normal(key, (num_tsteps,1)),         # Only one hidden osc
 
             diag_params=jnp.ones(num_dims+1), # Only one hidden osc
             edge_params=jnp.ones(len(edges)),
@@ -127,7 +123,7 @@ def main():
     for step in range(num_iters):
         model, opt_state, loss = make_step(model, opt_state, optimizer, loss_fn)
         if step % iters_per_log == 0:
-            x_norm_list.append(jnp.linalg.norm(model.amp))
+            x_norm_list.append(jnp.linalg.norm(model.x))
 
             loss_list.append(loss)
 
@@ -166,7 +162,6 @@ def main():
 
     q_pred = model.forward(train_data["t"][-2:], train_data["q"][-2:], num_test_steps)
     print("q_pred shape", q_pred.shape)
-    print("omega shape", model.omega)
 
     err_wrt_time = jnp.linalg.norm(q_pred[:50,:-1] - test_data["q"][:50], axis=1)
     plt.plot(test_data["t"][:50], err_wrt_time)
