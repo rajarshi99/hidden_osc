@@ -117,7 +117,7 @@ def main():
     tot_energy_rk4 = total_energy(q_rk4, v_rk4)
     tot_energy_expm = total_energy(q_expm, v_expm)
 
-    plt.plot(t, tot_energy_symp, label="symplectic step")
+    # plt.plot(t, tot_energy_symp, label="symplectic step")
     plt.plot(t, tot_energy_rk4, label="rk4 step")
     plt.plot(t, tot_energy_expm, label="expm step")
 
@@ -141,7 +141,7 @@ if __name__ == "__main__":
     print("Saved incomplete simulation data @", data_fname)
 
     sys_params_fname = data_dir / f"harmonic_osc_coupled_sys_params.npz"
-    np.savez(sys_params_fname, M=M, K=K)
+    np.savez(sys_params_fname, M=M, K=K, out_expm=q_expm)
     print("Saved sys params @", data_fname)
 
     print(q_expm[-1] - q_symp[-1], q_expm[-1] - q_rk4[-1])
