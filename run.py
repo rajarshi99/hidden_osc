@@ -10,10 +10,10 @@ from model.hidden_harmonic_osc import HiddenHarmonicOsc
 
 @eqx.filter_jit
 def make_step(model, opt_state, optimizer, loss_fn):
-    loss, grads = eqx.filter_value_and_grad(loss_fn)(model)
+    (loss, aux), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(model)
     updates, opt_state = optimizer.update(grads, opt_state, model)
     model = eqx.apply_updates(model, updates)
-    return model, opt_state, loss
+    return model, opt_state, loss, aux
 
 def train(model, train_data, epochs=1, lr=1e-3):
     inp = train_data["q"][:-1]
@@ -21,13 +21,13 @@ def train(model, train_data, epochs=1, lr=1e-3):
 
     def loss_fn(model):
         pred = jax.vmap(model)(inp)
-        return jnp.mean((pred - out) ** 2)
+        return jnp.mean((pred - out) ** 2), None # Not tested after aux in make_step
     
     optimizer = optax.adam(lr)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
     for epoch in range(epochs):
-        model, opt_state, loss = make_step(model, opt_state, optimizer, loss_fn)
+        model, opt_state, loss, _ = make_step(model, opt_state, optimizer, loss_fn)
         print(f"Epoch {epoch+1}/{epochs} | Loss {loss:.6f}")
     return model
 
@@ -101,13 +101,15 @@ def main():
             edge_params=jnp.ones(len(edges)),
             edges=edges
             )
+    num_test_steps = min(test_data["q"].shape[0], 100)
 
     def loss_fn(model):
-        return model.loss(train_data["t"], train_data["q"])
+        del_loss, forward_loss = model.loss(train_data["t"], train_data["q"])
+        return del_loss + 1*forward_loss, (del_loss, forward_loss)
 
     schedule = optax.exponential_decay(
                 init_value=1e-2,
-                transition_steps=10000,
+                transition_steps=50000,
                 decay_rate=0.9
                 )
     optimizer = optax.adam(schedule)
@@ -116,19 +118,25 @@ def main():
             )
 
     iters_per_log = 1000
-    num_iters = 500*iters_per_log
+    num_iters = 1000*iters_per_log
     x_norm_list = []
     loss_list = []
+    loss_aux_list = []
     val_list = []
     for step in range(num_iters):
-        model, opt_state, loss = make_step(model, opt_state, optimizer, loss_fn)
+        model, opt_state, loss, aux = make_step(model, opt_state, optimizer, loss_fn)
         if step % iters_per_log == 0:
             x_norm_list.append(jnp.linalg.norm(model.x))
 
             loss_list.append(loss)
+            loss_aux_list.append(aux)
 
-            num_test_steps = min(test_data["q"].shape[0], 100)
-            q_pred = model.forward(train_data["t"][-2:], train_data["q"][-2:], num_test_steps)
+            q_pred = model.forward(
+                    q0=model.build_state(train_data["q"][-2], model.x[-2]),
+                    q1=model.build_state(train_data["q"][-1], model.x[-1]),
+                    h=train_data["t"][-1] - train_data["t"][-2],
+                    num_steps=num_test_steps
+                    )
             rmse = jnp.sqrt(jnp.mean(
                 (q_pred[:,:-1] - test_data["q"][:num_test_steps,:])**2
                 ))
@@ -146,10 +154,13 @@ def main():
     plt.savefig("hidden.png")
     plt.close()
 
-    plt.plot(loss_list)
+    for i in range(len(loss_aux_list[0])):
+        plt.plot([tup[i] for tup in loss_aux_list], label=f"Term {i}")
+    plt.plot(loss_list, label="Total")
     plt.ylabel("Loss")
     plt.yscale("log")
     plt.xlabel("Train Step")
+    plt.legend()
     plt.savefig("loss.png")
     plt.close()
 
@@ -160,11 +171,17 @@ def main():
     plt.savefig("val.png")
     plt.close()
 
-    q_pred = model.forward(train_data["t"][-2:], train_data["q"][-2:], num_test_steps)
-    print("q_pred shape", q_pred.shape)
-
-    err_wrt_time = jnp.linalg.norm(q_pred[:50,:-1] - test_data["q"][:50], axis=1)
-    plt.plot(test_data["t"][:50], err_wrt_time)
+    q_pred = model.forward(
+            q0=model.build_state(train_data["q"][-2], model.x[-2]),
+            q1=model.build_state(train_data["q"][-1], model.x[-1]),
+            h=train_data["t"][-1] - train_data["t"][-2],
+            num_steps=num_test_steps
+            )
+    err_wrt_time = jnp.linalg.norm(
+            q_pred[:num_test_steps,:-1] - test_data["q"][:num_test_steps],
+            axis=1
+            )
+    plt.plot(test_data["t"][:num_test_steps], err_wrt_time)
     plt.ylabel("Error Norm")
     plt.yscale("log")
     plt.xlabel("Test Time")

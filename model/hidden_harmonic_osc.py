@@ -34,10 +34,7 @@ class HiddenHarmonicOsc(eqx.Module):
         kinetic = 0.5*jnp.sum(qdot**2, axis=-1)
         return h * (kinetic - self.potential(qmid))
 
-    def forward(self, t_in, q_in, num_steps):
-        q_full = self.build_state(t_in, q_in)
-        q0, q1 = q_full[0], q_full[-1]
-        h = t_in[-1] - t_in[-2]
+    def forward(self, q0, q1, h, num_steps):
         force_fn = jax.grad(self.potential)
 
         def scan_fn(carry, _):
@@ -48,7 +45,7 @@ class HiddenHarmonicOsc(eqx.Module):
         _, q_future = jax.lax.scan(scan_fn, (q0, q1), length=num_steps)
         return q_future
 
-    def build_state(self, t, q):
+    def build_state(self, q, x):
         # k_diag, _ = self.get_osc_params()
         # omega_min = jnp.sqrt(jnp.min(k_diag))
         # omega_max = jnp.sqrt(jnp.max(k_diag))
@@ -57,14 +54,11 @@ class HiddenHarmonicOsc(eqx.Module):
         # phase_t = t[:, None, None] * omega[None, None, :] + self.phase[None, :]
         # x = jnp.sum(self.amp[None, :, :]*jnp.cos(phase_t), axis=-1)
         # q_full = jnp.concatenate([q, x], axis=1)
-        num_tsteps = t.shape[0]
-        q_full = jnp.concatenate([q, self.x[-num_tsteps:]], axis=1)
+        q_full = jnp.concatenate([q, x], axis=-1)
         return q_full
 
     def loss(self, t_data, q_data):
-        _, k_edge = self.get_osc_params()
-        q = self.build_state(t_data, q_data)
-
+        q = self.build_state(q_data, self.x)
         def action(q):
             return jnp.sum(
                     self.disc_langrangian(
@@ -74,5 +68,13 @@ class HiddenHarmonicOsc(eqx.Module):
                         )
                     )
         R = jax.grad(action)(q)
+        del_loss = jnp.mean(R[1:-1]**2)
 
-        return jnp.mean(R[1:-1]**2) # + 1e-4*jnp.mean(jnp.abs(k_edge)) #+ 1e-2*jnp.mean(self.amp**2) 
+        num_fsteps = min(q_data.shape[0] // 2, 50)
+        q0 = self.build_state(q_data[-num_fsteps-2], self.x[-num_fsteps-2])
+        q1 = self.build_state(q_data[-num_fsteps-1], self.x[-num_fsteps-1])
+        h = t_data[-num_fsteps-1] - t_data[-num_fsteps-2]
+        q_end_pred = self.forward(q0, q1, h, num_fsteps)
+        forward_loss = jnp.mean((q_end_pred[:,:-self.x.shape[1]] - q_data[-num_fsteps:])**2)
+
+        return del_loss, forward_loss
